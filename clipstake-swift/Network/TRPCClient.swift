@@ -17,41 +17,47 @@ actor TRPCClient {
     // MARK: - Public
 
     func query<T: Decodable>(_ path: String, input: (some Encodable)? = nil as String?) async throws -> T {
-        try await request(path: path, input: input)
+        try await getRequest(path: path, input: input)
     }
 
     func query<T: Decodable>(_ path: String) async throws -> T {
-        try await request(path: path, input: nil as String?)
+        try await getRequest(path: path, input: nil as String?)
     }
 
     func mutate<T: Decodable>(_ path: String, input: (some Encodable)? = nil as String?) async throws -> T {
-        try await request(path: path, input: input)
+        try await postRequest(path: path, input: input)
     }
 
     func mutate<T: Decodable>(_ path: String) async throws -> T {
-        try await request(path: path, input: nil as String?)
+        try await postRequest(path: path, input: nil as String?)
     }
 
-    // MARK: - Core
+    // MARK: - GET (queries)
+    // tRPC queries: GET /api/trpc/<path>?batch=1&input={"0":{"json":<input>}}
 
-    private func request<I: Encodable, T: Decodable>(path: String, input: I?) async throws -> T {
-        let url = baseURL.appendingPathComponent(path)
+    private func getRequest<I: Encodable, T: Decodable>(path: String, input: I?) async throws -> T {
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
 
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("clipstake://", forHTTPHeaderField: "expo-origin")
-        req.setValue("swift-native", forHTTPHeaderField: "x-trpc-source")
+        // Build input wrapper
+        let inputWrapper: [String: TRPCInputWrapper<I>] = ["0": TRPCInputWrapper(json: input)]
+        let inputData = try JSONEncoder().encode(inputWrapper)
+        let inputStr = String(data: inputData, encoding: .utf8) ?? "{}"
 
-        if let cookie = KeychainHelper.get(KeychainHelper.sessionCookieKey) {
-            req.setValue(cookie, forHTTPHeaderField: "Cookie")
-        }
+        components.queryItems = [
+            URLQueryItem(name: "batch", value: "1"),
+            URLQueryItem(name: "input", value: inputStr)
+        ]
 
-        // Encode body: {"0": {"json": <input>}}
-        let body = TRPCRequestBody(input: input)
-        req.httpBody = try JSONEncoder().encode(body)
+        var req = URLRequest(url: components.url!)
+        req.httpMethod = "GET"
+        addHeaders(to: &req)
 
         let (data, response) = try await session.data(for: req)
+
+        #if DEBUG
+        print("[tRPC GET] \(path)")
+        print("[tRPC RSP] \(String(data: data, encoding: .utf8) ?? "<binary>")")
+        #endif
 
         if let http = response as? HTTPURLResponse, http.statusCode == 401 {
             throw AppError.unauthorized
@@ -60,30 +66,52 @@ actor TRPCClient {
         return try decodeResponse(data: data)
     }
 
-    // MARK: - Decode tRPC envelope
+    // MARK: - POST (mutations)
+    // tRPC mutations: POST /api/trpc/<path>?batch=1  body: {"0":{"json":<input>}}
 
-    private func decodeResponse<T: Decodable>(data: Data) throws -> T {
-        // tRPC response: [{"result":{"data":{"json":<T>}}}]
-        // or error:      [{"error":{"json":{"code":...,"message":...}}}]
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let str = try container.decode(String.self)
-            let formats: [ISO8601DateFormatter] = [
-                {
-                    let f = ISO8601DateFormatter()
-                    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                    return f
-                }(),
-                ISO8601DateFormatter()
-            ]
-            for f in formats {
-                if let date = f.date(from: str) { return date }
-            }
-            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode date: \(str)")
+    private func postRequest<I: Encodable, T: Decodable>(path: String, input: I?) async throws -> T {
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "batch", value: "1")]
+
+        var req = URLRequest(url: components.url!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addHeaders(to: &req)
+
+        let inputWrapper: [String: TRPCInputWrapper<I>] = ["0": TRPCInputWrapper(json: input)]
+        req.httpBody = try JSONEncoder().encode(inputWrapper)
+
+        let (data, response) = try await session.data(for: req)
+
+        #if DEBUG
+        print("[tRPC POST] \(path)")
+        print("[tRPC RSP]  \(String(data: data, encoding: .utf8) ?? "<binary>")")
+        #endif
+
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            throw AppError.unauthorized
         }
 
-        // Try array envelope first
+        return try decodeResponse(data: data)
+    }
+
+    // MARK: - Headers
+
+    private func addHeaders(to req: inout URLRequest) {
+        req.setValue("clipstake://", forHTTPHeaderField: "expo-origin")
+        req.setValue("swift-native", forHTTPHeaderField: "x-trpc-source")
+        if let cookie = KeychainHelper.get(KeychainHelper.sessionCookieKey) {
+            req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+    }
+
+    // MARK: - Decode tRPC envelope
+    // Response: [{"result":{"data":{"json":<T>}}}]
+
+    private func decodeResponse<T: Decodable>(data: Data) throws -> T {
+        let decoder = JSONDecoder()
+
+        // Try array envelope (batch=1 always returns array)
         if let envelope = try? decoder.decode([TRPCResponseEnvelope<T>].self, from: data),
            let first = envelope.first {
             if let error = first.error {
@@ -94,7 +122,7 @@ actor TRPCClient {
             }
         }
 
-        // Try single envelope
+        // Fallback: single envelope
         if let envelope = try? decoder.decode(TRPCResponseEnvelope<T>.self, from: data) {
             if let error = envelope.error {
                 throw mapTRPCError(error)
@@ -104,7 +132,11 @@ actor TRPCClient {
             }
         }
 
-        throw AppError.unknown(NSError(domain: "TRPCClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not decode response"]))
+        throw AppError.unknown(NSError(
+            domain: "TRPCClient",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Could not decode response"]
+        ))
     }
 
     private func mapTRPCError(_ error: TRPCError) -> AppError {
@@ -119,21 +151,10 @@ actor TRPCClient {
     }
 }
 
-// MARK: - Request Envelope
+// MARK: - Input Wrapper
 
-private struct TRPCRequestBody<I: Encodable>: Encodable {
-    let input: I?
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: DynamicKey.self)
-        if let input {
-            var inner = container.nestedContainer(keyedBy: DynamicKey.self, forKey: DynamicKey("0"))
-            try inner.encode(input, forKey: DynamicKey("json"))
-        } else {
-            var inner = container.nestedContainer(keyedBy: DynamicKey.self, forKey: DynamicKey("0"))
-            try inner.encodeNil(forKey: DynamicKey("json"))
-        }
-    }
+private struct TRPCInputWrapper<I: Encodable>: Encodable {
+    let json: I?
 }
 
 // MARK: - Response Envelope
@@ -159,14 +180,4 @@ private struct TRPCErrorDetail: Decodable {
     let code: String?
     let message: String?
     let httpStatus: Int?
-}
-
-// MARK: - Dynamic Coding Keys
-
-private struct DynamicKey: CodingKey {
-    let stringValue: String
-    var intValue: Int? { nil }
-    init(_ string: String) { self.stringValue = string }
-    init?(stringValue: String) { self.stringValue = stringValue }
-    init?(intValue: Int) { return nil }
 }

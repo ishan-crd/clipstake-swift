@@ -24,7 +24,7 @@ import SwiftUI
         defer { isLoading = false }
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.fetchCampaign() }
-            group.addTask { await self.fetchUserSubmissions() }
+            group.addTask { await self.fetchSubmissionsPublic() }
         }
     }
 
@@ -53,7 +53,7 @@ import SwiftUI
             videoURL = ""
             detectedPlatform = nil
             submitSuccess = true
-            await fetchUserSubmissions()
+            await fetchSubmissionsPublic()
         } catch AppError.duplicate {
             submitError = "You've already submitted this video."
         } catch let err as AppError {
@@ -78,7 +78,7 @@ import SwiftUI
         }
     }
 
-    private func fetchUserSubmissions() async {
+    func fetchSubmissionsPublic() async {
         do {
             let subs: [Submission] = try await TRPCClient.shared.query("submission.list")
             submissions = subs
@@ -163,6 +163,13 @@ struct CampaignDetailView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(24)
+                .presentationBackground(
+                    LinearGradient(
+                        colors: [.white, Palette.Sand.s100],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         }
         .task { await viewModel.load() }
     }
@@ -610,118 +617,197 @@ private struct CountdownText: View {
     }
 }
 
-// MARK: - Submit Clip Bottom Sheet
+// MARK: - Submit Clip Bottom Sheet (2-step)
+
+private enum SubmitStep { case info, input }
 
 struct SubmitClipSheet: View {
     @Bindable var viewModel: CampaignDetailViewModel
     @Binding var isPresented: Bool
     @Environment(\.appColors) private var colors
-    @FocusState private var urlFocused: Bool
+
+    @State private var step: SubmitStep = .info
+    @State private var addedURLs: [String] = []
+    @State private var currentInput: String = ""
+    @FocusState private var inputFocused: Bool
+    @State private var submitError: String?
+    @State private var isSubmitting = false
+
+    private let maxVideos = 5
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
+            sheetHeader
+
+            switch step {
+            case .info:
+                infoStep
+            case .input:
+                inputStep
+            }
+        }
+        .background(.clear)
+    }
+
+    // MARK: - Shared Header
+
+    private var sheetHeader: some View {
+        VStack(spacing: 6) {
+            // X dismiss
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Submit a clip")
-                        .font(AppFont.Display.bold(20))
-                        .foregroundColor(colors.text)
-                    if let campaign = viewModel.campaign {
-                        Text(campaign.title)
-                            .font(AppFont.Body.regular(13))
-                            .foregroundColor(colors.textSecondary)
-                            .lineLimit(1)
-                    }
-                }
                 Spacer()
-                Button {
-                    isPresented = false
-                } label: {
+                Button { isPresented = false } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(colors.textSecondary)
-                        .frame(width: 32, height: 32)
-                        .background(colors.bgSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(Palette.Sand.s100)
                         .clipShape(Circle())
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 24)
-            .padding(.bottom, 20)
+            .padding(.top, 12)
+
+            Text("Submit your clips")
+                .font(AppFont.Display.bold(20))
+                .foregroundColor(colors.text)
+
+            Text("Post your video first, then paste the\nlink here within 1 hour.")
+                .font(AppFont.Body.regular(13))
+                .foregroundColor(colors.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.bottom, 16)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Step 1: Info
+
+    private var infoStep: some View {
+        VStack(spacing: 0) {
+            Divider()
+
+            if let campaign = viewModel.campaign {
+                infoRow(label: "Minimum views",
+                        value: campaign.minViews.map { formatCompact($0) } ?? "—")
+                Divider().padding(.leading, 16)
+
+                infoRow(label: "Maximum submissions",
+                        value: campaign.maxSubmissions.map { "\($0)" } ?? "—")
+                Divider().padding(.leading, 16)
+
+                if let p = campaign.payPer1kViews {
+                    infoRow(label: "Rate per 1K Views",
+                            value: "\(stripCents(p)) USD",
+                            valueColor: Palette.Green.g600)
+                    Divider().padding(.leading, 16)
+                }
+
+                if let max = campaign.maxPayoutPerVideo {
+                    infoRow(label: "Maximum payout",
+                            value: "\(stripCents(max)) USD",
+                            valueColor: Palette.Green.g600)
+                    Divider().padding(.leading, 16)
+                }
+
+                // Platform row
+                HStack {
+                    Text("Platform")
+                        .font(AppFont.Body.regular(14))
+                        .foregroundColor(colors.textSecondary)
+                    Spacer()
+                    HStack(spacing: 6) {
+                        ForEach(campaign.platforms, id: \.self) { p in
+                            platformBadge(p)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+            }
 
             Divider()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    // URL Input
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Video URL")
-                            .font(AppFont.Body.semibold(13))
-                            .foregroundColor(colors.text)
+            Spacer(minLength: 0)
 
-                        HStack(spacing: 10) {
-                            if let platform = viewModel.detectedPlatform {
-                                PlatformIconRow(platforms: [platform], size: 18, color: colors.accent)
-                                    .frame(width: 22)
-                            } else {
-                                Image(systemName: "link")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(colors.textTertiary)
-                                    .frame(width: 22)
-                            }
+            // I understand button
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { step = .input }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { inputFocused = true }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("I understand")
+                        .font(AppFont.Body.semibold(16))
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Palette.Crimson.c600)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+            }
+            .buttonStyle(PressableButtonStyle())
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 32)
+        }
+    }
 
-                            TextField("Paste your video URL here", text: Binding(
-                                get: { viewModel.videoURL },
-                                set: { viewModel.onURLChange($0) }
-                            ))
-                            .font(AppFont.Body.regular(14))
-                            .foregroundColor(colors.text)
-                            .autocapitalization(.none)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .focused($urlFocused)
+    private func infoRow(label: String, value: String, valueColor: Color? = nil) -> some View {
+        HStack {
+            Text(label)
+                .font(AppFont.Body.regular(14))
+                .foregroundColor(colors.textSecondary)
+            Spacer()
+            Text(value)
+                .font(AppFont.Body.medium(14))
+                .foregroundColor(valueColor ?? colors.text)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
 
-                            if !viewModel.videoURL.isEmpty {
-                                Button {
-                                    viewModel.onURLChange("")
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 16))
-                                        .foregroundColor(colors.textTertiary)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 14)
-                        .background(colors.bgInput)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Radius.lg)
-                                .stroke(
-                                    viewModel.submitError != nil ? colors.error :
-                                    viewModel.submitSuccess ? colors.success :
-                                    urlFocused ? colors.accent :
-                                    colors.border,
-                                    lineWidth: 1
-                                )
-                        )
+    private func platformBadge(_ platform: String) -> some View {
+        HStack(spacing: 4) {
+            PlatformIconRow(platforms: [platform], size: 14, color: colors.text)
+            Text(platform.platformDisplayName)
+                .font(AppFont.Body.medium(12))
+                .foregroundColor(colors.text)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Palette.Sand.s100)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+    }
 
-                        // Platform detection hint
-                        if let platform = viewModel.detectedPlatform {
-                            HStack(spacing: 6) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 13))
-                                    .foregroundColor(colors.success)
-                                Text("\(platform.capitalized) URL detected")
-                                    .font(AppFont.Body.regular(13))
-                                    .foregroundColor(colors.success)
-                            }
+    // MARK: - Step 2: Input
+
+    private var inputStep: some View {
+        VStack(spacing: 0) {
+            Divider()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Section header
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Submit videos")
+                            .font(AppFont.Body.medium(14))
+                            .foregroundColor(Palette.Sand.s800)
+                        let total = viewModel.campaign?.maxClipsTotal ?? viewModel.campaign?.maxSubmissions
+                        if let t = total {
+                            Text("This campaign accepts up to \(t) clips total.")
+                                .font(AppFont.Body.regular(13))
+                                .foregroundColor(colors.textSecondary)
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 12)
 
-                    // Error
-                    if let err = viewModel.submitError {
-                        HStack(spacing: 6) {
+                    // Error banner
+                    if let err = submitError {
+                        HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.circle.fill")
                                 .font(.system(size: 14))
                             Text(err)
@@ -733,93 +819,242 @@ struct SubmitClipSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(colors.error.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 8)
                     }
 
-                    // Success
-                    if viewModel.submitSuccess {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundColor(colors.success)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Clip submitted!")
-                                    .font(AppFont.Body.semibold(14))
-                                    .foregroundColor(colors.success)
-                                Text("We'll review it and update your workspace.")
-                                    .font(AppFont.Body.regular(12))
-                                    .foregroundColor(colors.textSecondary)
+                    // Added URL chips
+                    VStack(spacing: 8) {
+                        ForEach(addedURLs.indices, id: \.self) { i in
+                            urlChip(url: addedURLs[i]) {
+                                addedURLs.remove(at: i)
                             }
                         }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(colors.success.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
-                    }
 
-                    // Info row
-                    if let campaign = viewModel.campaign, !campaign.cpmLabel.isEmpty {
-                        HStack(spacing: 6) {
-                            Image(systemName: "info.circle")
-                                .font(.system(size: 13))
-                                .foregroundColor(colors.textTertiary)
-                            Text("Earn \(campaign.cpmLabel) once your clip is approved.")
-                                .font(AppFont.Body.regular(12))
-                                .foregroundColor(colors.textSecondary)
+                        // Active input field (if under max)
+                        if addedURLs.count < maxVideos {
+                            urlInputField
                         }
                     }
+                    .padding(.horizontal, 16)
+
+                    // Add another button
+                    if addedURLs.count < maxVideos - 1 || (!currentInput.isEmpty && addedURLs.count < maxVideos) {
+                        let slotCount = addedURLs.count + (addedURLs.isEmpty ? 1 : (currentInput.isEmpty ? 0 : 1))
+                        Button {
+                            let trimmed = currentInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty && trimmed.isValidURL {
+                                addedURLs.append(trimmed)
+                                currentInput = ""
+                                submitError = nil
+                            } else if !trimmed.isEmpty {
+                                submitError = "Please enter a valid URL."
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { inputFocused = true }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text("Add another video")
+                                    .font(AppFont.Body.medium(14))
+                                Text("(\(slotCount)/\(maxVideos))")
+                                    .font(AppFont.Body.regular(13))
+                                    .foregroundColor(colors.textTertiary)
+                            }
+                            .foregroundColor(colors.textSecondary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(Palette.Sand.s100)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Radius.md)
+                                    .stroke(Palette.Sand.s200, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                    }
+
+                    Spacer(minLength: 24)
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 20)
             }
 
-            // Bottom buttons
-            VStack(spacing: 10) {
+            // Submit button
+            VStack(spacing: 0) {
+                Divider()
                 Button {
-                    Task {
-                        await viewModel.submitClip()
-                        if viewModel.submitSuccess {
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            isPresented = false
-                        }
-                    }
+                    Task { await handleSubmit() }
                 } label: {
                     Group {
-                        if viewModel.isSubmitting {
+                        if isSubmitting {
                             ProgressView().tint(.white)
                         } else {
-                            Text("Submit clip")
+                            Text("Submit")
                                 .font(AppFont.Body.semibold(16))
                                 .foregroundColor(.white)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(viewModel.isSubmitting ? Palette.Crimson.c600.opacity(0.7) : Palette.Crimson.c600)
+                    .background(canSubmit ? Palette.Crimson.c600 : Palette.Crimson.c600.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
                 }
                 .buttonStyle(PressableButtonStyle())
-                .disabled(viewModel.isSubmitting || viewModel.videoURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!canSubmit || isSubmitting)
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 32)
+            }
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { inputFocused = true }
+        }
+    }
 
-                Button { isPresented = false } label: {
-                    Text("Cancel")
-                        .font(AppFont.Body.medium(14))
-                        .foregroundColor(colors.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
+    // MARK: - URL Input Field
+
+    private var urlInputField: some View {
+        HStack(spacing: 10) {
+            if let platform = currentInput.detectPlatform() {
+                PlatformIconRow(platforms: [platform], size: 16, color: colors.textSecondary)
+                    .frame(width: 18)
+            } else {
+                Image(systemName: "link")
+                    .font(.system(size: 14))
+                    .foregroundColor(colors.textTertiary)
+                    .frame(width: 18)
+            }
+
+            TextField("Enter a link to your video", text: $currentInput)
+                .font(AppFont.Body.regular(14))
+                .foregroundColor(colors.text)
+                .autocapitalization(.none)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .focused($inputFocused)
+                .onChange(of: currentInput) { _, _ in submitError = nil }
+
+            if !currentInput.isEmpty {
+                Button { currentInput = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundColor(Palette.Sand.s300)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 32)
         }
-        .background(colors.bg)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { urlFocused = true }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.md)
+                .stroke(inputFocused ? Palette.Crimson.c300 : Palette.Sand.s200, lineWidth: 1)
+        )
+    }
+
+    // MARK: - URL Chip Row
+
+    private func urlChip(url: String, onDelete: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text(url)
+                .font(AppFont.Body.regular(13))
+                .foregroundColor(colors.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let platform = url.detectPlatform() {
+                HStack(spacing: 4) {
+                    PlatformIconRow(platforms: [platform], size: 13, color: colors.text)
+                    Text(platform.platformDisplayName)
+                        .font(AppFont.Body.medium(12))
+                        .foregroundColor(colors.text)
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Palette.Sand.s100)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
+            }
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 14))
+                    .foregroundColor(Palette.Crimson.c500)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.md)
+                .stroke(Palette.Sand.s200, lineWidth: 1)
+        )
+    }
+
+    // MARK: - Submit Logic
+
+    private var canSubmit: Bool {
+        let trimmed = currentInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !addedURLs.isEmpty || (!trimmed.isEmpty && trimmed.isValidURL)
+    }
+
+    private func handleSubmit() async {
+        var allURLs = addedURLs
+        let trimmed = currentInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            guard trimmed.isValidURL else { submitError = "Please enter a valid URL."; return }
+            allURLs.append(trimmed)
+        }
+        guard !allURLs.isEmpty else { submitError = "Please enter at least one video URL."; return }
+
+        isSubmitting = true
+        submitError = nil
+        defer { isSubmitting = false }
+
+        var lastError: String?
+        for url in allURLs {
+            do {
+                struct SubmitInput: Encodable { let campaignId: String; let videoUrl: String }
+                let _: Submission = try await TRPCClient.shared.mutate(
+                    "submission.create",
+                    input: SubmitInput(campaignId: viewModel.campaignId, videoUrl: url)
+                )
+            } catch AppError.duplicate {
+                lastError = "One or more videos were already submitted."
+            } catch let err as AppError {
+                lastError = err.errorDescription
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+
+        if let err = lastError {
+            submitError = err
+        } else {
+            await viewModel.fetchSubmissionsPublic()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            isPresented = false
         }
     }
 }
 
 // MARK: - Helpers
+
+private func stripCents(_ cents: Int) -> String {
+    let dollars = Double(cents) / 100.0
+    var str = String(format: "%.2f", dollars)
+    while str.hasSuffix("0") { str.removeLast() }
+    if str.hasSuffix(".") { str.removeLast() }
+    return "$\(str)"
+}
+
+private func formatCompact(_ n: Int) -> String {
+    let nf = NumberFormatter()
+    nf.numberStyle = .decimal
+    return nf.string(from: NSNumber(value: n)) ?? "\(n)"
+}
 
 private func formatViews(_ views: Int) -> String {
     if views >= 1_000_000 { return String(format: "%.1fM", Double(views) / 1_000_000) }

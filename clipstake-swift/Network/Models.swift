@@ -221,6 +221,8 @@ struct CampaignDetail: Codable, Identifiable {
     let isPrivate: Bool?
     let requiresLogo: Bool?
     let websiteUrl: String?
+    let maxSubmissions: Int?
+    let maxClipsTotal: Int?
 
     struct Brand: Codable {
         let name: String?

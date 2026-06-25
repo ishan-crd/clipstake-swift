@@ -217,6 +217,10 @@ struct CampaignDetail: Codable, Identifiable {
     let maxPayoutPerVideo: Int?
     let resources: [CampaignResource]?
     let campaignInstructions: String?
+    let totalViews: Int?
+    let isPrivate: Bool?
+    let requiresLogo: Bool?
+    let websiteUrl: String?
 
     struct Brand: Codable {
         let name: String?
@@ -244,11 +248,15 @@ struct CampaignDetail: Codable, Identifiable {
 
     var descriptionText: String? { campaignAbout ?? description }
 
-    var endsInLabel: String {
-        guard let iso = endDate, !iso.isEmpty else { return "" }
+    var endDateParsed: Date? {
+        guard let iso = endDate, !iso.isEmpty else { return nil }
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+    }
+
+    var endsInLabel: String {
+        guard let date = endDateParsed else { return "" }
         let diff = date.timeIntervalSinceNow
         if diff <= 0 { return "Ended" }
         let days = Int(diff / 86400)
@@ -258,12 +266,22 @@ struct CampaignDetail: Codable, Identifiable {
 
     var cpmLabel: String {
         guard let p = payPer1kViews else { return "" }
-        return "$\(String(format: "%.2f", Double(p) / 100)) / 1k views"
+        let dollars = Double(p) / 100.0
+        var str = String(format: "%.2f", dollars)
+        while str.hasSuffix("0") { str.removeLast() }
+        if str.hasSuffix(".") { str.removeLast() }
+        return "$\(str) / 1k views"
     }
-    var formattedBudget: String {
-        "$\(String(format: "%.2f", budgetDollars ?? 0))"
-    }
+    var formattedBudget: String { "$\(String(format: "%.2f", budgetDollars ?? 0))" }
+    var formattedSpent: String { "$\(String(format: "%.2f", spentDollars ?? 0))" }
     var budgetPercentage: Double { spentPercent ?? 0 }
+
+    var formattedTotalViews: String {
+        guard let v = totalViews, v > 0 else { return "" }
+        if v >= 1_000_000 { return String(format: "%.1fM", Double(v) / 1_000_000) }
+        if v >= 1_000     { return String(format: "%.1fK", Double(v) / 1_000) }
+        return "\(v)"
+    }
 }
 
 // MARK: - Paginated Response

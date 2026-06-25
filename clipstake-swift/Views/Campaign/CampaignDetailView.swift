@@ -37,14 +37,8 @@ import SwiftUI
 
     func submitClip() async {
         let urlTrimmed = videoURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !urlTrimmed.isEmpty else {
-            submitError = "Please enter a video URL."
-            return
-        }
-        guard urlTrimmed.isValidURL else {
-            submitError = "Please enter a valid URL."
-            return
-        }
+        guard !urlTrimmed.isEmpty else { submitError = "Please enter a video URL."; return }
+        guard urlTrimmed.isValidURL   else { submitError = "Please enter a valid URL."; return }
 
         isSubmitting = true
         submitError = nil
@@ -92,6 +86,15 @@ import SwiftUI
     }
 }
 
+// MARK: - Tab
+
+private enum CampaignTab: String, CaseIterable {
+    case general     = "General"
+    case guidelines  = "Guidelines"
+    case cpm         = "CPM"
+    case leaderboard = "Leaderboard"
+}
+
 // MARK: - View
 
 struct CampaignDetailView: View {
@@ -100,6 +103,8 @@ struct CampaignDetailView: View {
     @Environment(\.appColors) private var colors
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: CampaignDetailViewModel
+    @State private var selectedTab: CampaignTab = .general
+    @State private var showSubmitSheet = false
 
     init(campaignId: String) {
         self.campaignId = campaignId
@@ -110,277 +115,436 @@ struct CampaignDetailView: View {
         ZStack {
             colors.bg.ignoresSafeArea()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if let campaign = viewModel.campaign {
-                        // Hero thumbnail
+            if let campaign = viewModel.campaign {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
                         heroSection(campaign)
-
-                        // Campaign details
-                        campaignInfo(campaign)
+                        metaSection(campaign)
                             .padding(.horizontal, Layout.pagePadX)
-                            .padding(.top, 20)
-
-                        Divider()
+                            .padding(.top, 14)
+                        budgetSection(campaign)
                             .padding(.horizontal, Layout.pagePadX)
-                            .padding(.vertical, 16)
-
-                        // Submit section
-                        submitSection
+                            .padding(.top, 12)
+                        submitButton
                             .padding(.horizontal, Layout.pagePadX)
-
-                        // User's existing submissions
+                            .padding(.top, 16)
+                        tabBar
+                            .padding(.top, 16)
+                        tabContent(campaign)
+                            .padding(.horizontal, Layout.pagePadX)
+                            .padding(.top, 16)
                         if !viewModel.submissions.isEmpty {
-                            Divider()
-                                .padding(.horizontal, Layout.pagePadX)
-                                .padding(.vertical, 16)
-
                             submissionsSection
                                 .padding(.horizontal, Layout.pagePadX)
+                                .padding(.top, 24)
                         }
-
-                    } else if viewModel.isLoading {
-                        skeletonDetail
+                        Spacer(minLength: 100)
                     }
-
-                    Spacer(minLength: 100)
                 }
+                .ignoresSafeArea(edges: .top)
+            } else if viewModel.isLoading {
+                skeletonView
+            } else if let err = viewModel.error {
+                VStack(spacing: 12) {
+                    Text(err.errorDescription ?? "Error loading campaign")
+                        .font(AppFont.Body.regular(14))
+                        .foregroundColor(colors.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") { Task { await viewModel.load() } }
+                        .font(AppFont.Body.semibold(14))
+                        .foregroundColor(colors.accent)
+                }
+                .padding(32)
             }
         }
         .navigationBarHidden(true)
-        .overlay(alignment: .top) {
-            navigationBar
+        .sheet(isPresented: $showSubmitSheet) {
+            SubmitClipSheet(viewModel: viewModel, isPresented: $showSubmitSheet)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(24)
         }
         .task { await viewModel.load() }
-    }
-
-    // MARK: - Navigation Bar
-
-    private var navigationBar: some View {
-        HStack {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(colors.text)
-                    .frame(width: 40, height: 40)
-                    .background(colors.bgCard.opacity(0.9))
-                    .clipShape(Circle())
-            }
-            .buttonStyle(PressableButtonStyle())
-
-            Spacer()
-        }
-        .padding(.horizontal, Layout.pagePadX)
-        .padding(.top, 8)
     }
 
     // MARK: - Hero
 
     private func heroSection(_ campaign: CampaignDetail) -> some View {
         ZStack(alignment: .bottom) {
-            AsyncImage(url: campaign.thumbnailURL) { phase in
-                if case .success(let img) = phase {
-                    img.resizable().scaledToFill()
-                } else {
-                    Rectangle().fill(colors.bgTertiary)
+            // Thumbnail
+            GeometryReader { geo in
+                AsyncImage(url: campaign.thumbnailURL) { phase in
+                    if case .success(let img) = phase {
+                        img.resizable().scaledToFill()
+                    } else {
+                        Rectangle().fill(Color(hex: campaign.brandColor))
+                    }
                 }
+                .frame(width: geo.size.width, height: 260)
+                .clipped()
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 220)
-            .clipped()
+            .frame(height: 260)
 
-            // Gradient overlay
+            // Gradient scrim at bottom
             LinearGradient(
-                colors: [.clear, Color.black.opacity(0.6)],
+                colors: [.clear, Color.black.opacity(0.55)],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 100)
+            .frame(height: 140)
 
-            HStack(alignment: .bottom) {
-                // Brand logo + name
-                HStack(spacing: 8) {
-                    if let logoURL = campaign.brandLogoURL {
-                        AsyncImage(url: logoURL) { phase in
-                            if case .success(let img) = phase {
-                                img.resizable().scaledToFill()
-                            } else {
-                                Circle().fill(colors.bgSecondary)
-                            }
-                        }
-                        .frame(width: 28, height: 28)
-                        .clipShape(Circle())
-                    }
-                    Text(campaign.brandName)
-                        .font(AppFont.Body.medium(13))
-                        .foregroundColor(.white.opacity(0.9))
-                }
+            // Bottom overlay: brand logo + badges
+            HStack(alignment: .bottom, spacing: 10) {
+                brandLogo(campaign)
                 Spacer()
-
-                // Status badge
-                statusBadge(campaign.status)
+                HStack(spacing: 6) {
+                    if campaign.status == "active" {
+                        heroBadge("Active", fg: Color(hex: "#16A34A"), bg: Color(hex: "#DCFCE7"))
+                    } else if campaign.status == "paused" {
+                        heroBadge("Paused", fg: .orange, bg: Color.orange.opacity(0.2))
+                    }
+                    if campaign.requiresLogo == true {
+                        heroBadge("Logo", fg: Color(hex: "#57534E"), bg: Color.white.opacity(0.85))
+                    }
+                    if campaign.isPrivate == true {
+                        heroBadge("Private", fg: Color(hex: "#57534E"), bg: Color.white.opacity(0.85))
+                    }
+                }
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+            .padding(.bottom, 14)
+
+            // Top overlay: back button + CPM pill
+            VStack {
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.black.opacity(0.35))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    Spacer()
+                    if !campaign.cpmLabel.isEmpty {
+                        Text(campaign.cpmLabel)
+                            .font(AppFont.Body.medium(12))
+                            .foregroundColor(colors.text)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.white.opacity(0.92))
+                            .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 56)
+                Spacer()
+            }
         }
-        .ignoresSafeArea(edges: .top)
+        .frame(height: 260)
     }
 
-    @ViewBuilder
-    private func statusBadge(_ status: String) -> some View {
-        let (bg, fg): (Color, Color) = switch status {
-        case "active":    (Palette.Green.g500.opacity(0.2), Palette.Green.g500)
-        case "paused":    (Color.orange.opacity(0.2),       Color.orange)
-        case "completed": (colors.bgTertiary,               colors.textSecondary)
-        default:          (colors.bgTertiary,               colors.textSecondary)
+    private func brandLogo(_ campaign: CampaignDetail) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color(hex: campaign.brandColor))
+                .frame(width: 44, height: 44)
+            if let logoURL = campaign.brandLogoURL {
+                AsyncImage(url: logoURL) { phase in
+                    if case .success(let img) = phase {
+                        img.resizable().scaledToFill()
+                    } else { EmptyView() }
+                }
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+            } else {
+                Text(String(campaign.brandName.prefix(1)).uppercased())
+                    .font(AppFont.Body.bold(18))
+                    .foregroundColor(.white)
+            }
         }
+        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+    }
 
-        Text(status.capitalized)
+    private func heroBadge(_ label: String, fg: Color, bg: Color) -> some View {
+        Text(label)
             .font(AppFont.Body.medium(11))
             .foregroundColor(fg)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(bg)
             .clipShape(Capsule())
     }
 
-    // MARK: - Campaign Info
+    // MARK: - Meta (title + platforms + countdown)
 
-    private func campaignInfo(_ campaign: CampaignDetail) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+    private func metaSection(_ campaign: CampaignDetail) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text(campaign.title)
                 .font(AppFont.Display.bold(22))
                 .foregroundColor(colors.text)
+                .fixedSize(horizontal: false, vertical: true)
 
-            if let desc = campaign.descriptionText, !desc.isEmpty {
-                Text(desc)
-                    .font(AppFont.Body.regular(14))
-                    .foregroundColor(colors.textSecondary)
-                    .lineLimit(nil)
-            }
-
-            // Platforms
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Accepted platforms")
-                    .font(AppFont.Body.semibold(13))
-                    .foregroundColor(colors.text)
-                PlatformIconRow(platforms: campaign.platforms, size: 20, color: colors.iconSecondary)
-            }
-
-            // CPM info
-            HStack(spacing: 16) {
-                if !campaign.cpmLabel.isEmpty {
-                    infoChip(label: "CPM", value: campaign.cpmLabel)
-                }
-                infoChip(label: "Budget", value: campaign.formattedBudget)
-                if !campaign.endsInLabel.isEmpty {
-                    infoChip(label: "Deadline", value: campaign.endsInLabel)
+            HStack(spacing: 10) {
+                PlatformIconRow(platforms: campaign.platforms, size: 18, color: colors.iconSecondary)
+                Spacer()
+                if let endDate = campaign.endDateParsed {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 12))
+                            .foregroundColor(colors.textTertiary)
+                        CountdownText(endDate: endDate)
+                            .font(AppFont.Body.medium(12))
+                            .foregroundColor(colors.textSecondary)
+                    }
                 }
             }
         }
     }
 
-    private func infoChip(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    // MARK: - Budget
+
+    private func budgetSection(_ campaign: CampaignDetail) -> some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .center) {
+                Text("\(campaign.formattedSpent) of \(campaign.formattedBudget) paid")
+                    .font(AppFont.Body.medium(13))
+                    .foregroundColor(colors.text)
+                Spacer()
+                if !campaign.formattedTotalViews.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "eye")
+                            .font(.system(size: 12))
+                            .foregroundColor(colors.textTertiary)
+                        Text(campaign.formattedTotalViews)
+                            .font(AppFont.Body.regular(12))
+                            .foregroundColor(colors.textSecondary)
+                    }
+                }
+                Text("\(Int(campaign.budgetPercentage))%")
+                    .font(AppFont.Body.medium(13))
+                    .foregroundColor(colors.text)
+                    .padding(.leading, 8)
+            }
+            SegmentedProgressBar(percentage: campaign.budgetPercentage, colors: colors)
+        }
+    }
+
+    // MARK: - Submit Button
+
+    private var submitButton: some View {
+        Button { showSubmitSheet = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("Submit a clip")
+                    .font(AppFont.Body.semibold(16))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(colors.accent)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    // MARK: - Tab Bar
+
+    private var tabBar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                ForEach(CampaignTab.allCases, id: \.self) { tab in
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { selectedTab = tab }
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(tab.rawValue)
+                                .font(selectedTab == tab ? AppFont.Body.semibold(13) : AppFont.Body.regular(13))
+                                .foregroundColor(selectedTab == tab ? colors.text : colors.textSecondary)
+                            Rectangle()
+                                .fill(selectedTab == tab ? colors.accent : Color.clear)
+                                .frame(height: 2)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            Divider()
+        }
+    }
+
+    // MARK: - Tab Content
+
+    @ViewBuilder
+    private func tabContent(_ campaign: CampaignDetail) -> some View {
+        switch selectedTab {
+        case .general:    generalTab(campaign)
+        case .guidelines: guidelinesTab(campaign)
+        case .cpm:        cpmTab(campaign)
+        case .leaderboard: leaderboardTab
+        }
+    }
+
+    private func generalTab(_ campaign: CampaignDetail) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            // About
+            if let desc = campaign.descriptionText, !desc.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("About campaign")
+                        .font(AppFont.Display.semibold(16))
+                        .foregroundColor(colors.text)
+                    Text(desc)
+                        .font(AppFont.Body.regular(14))
+                        .foregroundColor(colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            // Resources
+            if let resources = campaign.resources, !resources.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(resources, id: \.url) { resource in
+                        if let url = URL(string: resource.url) {
+                            Link(destination: url) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.down.to.line")
+                                        .font(.system(size: 13))
+                                    Text(resource.name)
+                                        .font(AppFont.Body.medium(13))
+                                }
+                                .foregroundColor(colors.text)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(colors.bgSecondary)
+                                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Radius.md)
+                                        .stroke(colors.border, lineWidth: 1)
+                                )
+                            }
+                        }
+                    }
+                    if let website = campaign.websiteUrl, let url = URL(string: website) {
+                        Link(destination: url) {
+                            HStack(spacing: 6) {
+                                Text("Visit website")
+                                    .font(AppFont.Body.medium(13))
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 12))
+                            }
+                            .foregroundColor(colors.text)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(colors.bgSecondary)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Radius.md)
+                                    .stroke(colors.border, lineWidth: 1)
+                            )
+                        }
+                    }
+                    Spacer()
+                }
+            } else if let website = campaign.websiteUrl, let url = URL(string: website) {
+                HStack {
+                    Link(destination: url) {
+                        HStack(spacing: 6) {
+                            Text("Visit website")
+                                .font(AppFont.Body.medium(13))
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 12))
+                        }
+                        .foregroundColor(colors.text)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(colors.bgSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Radius.md)
+                                .stroke(colors.border, lineWidth: 1)
+                        )
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private func guidelinesTab(_ campaign: CampaignDetail) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let instructions = campaign.campaignInstructions, !instructions.isEmpty {
+                Text("Campaign Guidelines")
+                    .font(AppFont.Display.semibold(16))
+                    .foregroundColor(colors.text)
+                Text(instructions)
+                    .font(AppFont.Body.regular(14))
+                    .foregroundColor(colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                emptyTabState(icon: "doc.text", message: "No guidelines provided for this campaign.")
+            }
+        }
+    }
+
+    private func cpmTab(_ campaign: CampaignDetail) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Earnings")
+                .font(AppFont.Display.semibold(16))
+                .foregroundColor(colors.text)
+
+            VStack(spacing: 1) {
+                if let p = campaign.payPer1kViews {
+                    cpmRow(label: "Pay per 1k views", value: campaign.cpmLabel)
+                    Divider()
+                    cpmRow(label: "CPM (cents)", value: "\(p)¢")
+                }
+                if let min = campaign.minViews {
+                    Divider()
+                    cpmRow(label: "Min. views to qualify", value: formatViews(min))
+                }
+                if let max = campaign.maxPayoutPerVideo {
+                    Divider()
+                    cpmRow(label: "Max payout / video", value: "$\(String(format: "%.2f", Double(max) / 100))")
+                }
+            }
+            .background(colors.bgCard)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+        }
+    }
+
+    private func cpmRow(label: String, value: String) -> some View {
+        HStack {
             Text(label)
-                .font(AppFont.Body.regular(11))
-                .foregroundColor(colors.textTertiary)
+                .font(AppFont.Body.regular(13))
+                .foregroundColor(colors.textSecondary)
+            Spacer()
             Text(value)
                 .font(AppFont.Body.semibold(13))
                 .foregroundColor(colors.text)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(colors.bgSecondary)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 
-    // MARK: - Submit Section
+    private var leaderboardTab: some View {
+        emptyTabState(icon: "trophy", message: "Leaderboard coming soon.")
+    }
 
-    private var submitSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Submit a clip")
-                .font(AppFont.Display.semibold(16))
-                .foregroundColor(colors.text)
-
-            // URL input
-            HStack(spacing: 10) {
-                if let platform = viewModel.detectedPlatform {
-                    PlatformIconRow(platforms: [platform], size: 18, color: colors.accent)
-                        .frame(width: 20)
-                } else {
-                    Image(systemName: "link")
-                        .font(.system(size: 16))
-                        .foregroundColor(colors.textTertiary)
-                        .frame(width: 20)
-                }
-
-                TextField("Paste video URL", text: Binding(
-                    get: { viewModel.videoURL },
-                    set: { viewModel.onURLChange($0) }
-                ))
+    private func emptyTabState(icon: String, message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 36))
+                .foregroundColor(colors.textTertiary)
+            Text(message)
                 .font(AppFont.Body.regular(14))
-                .foregroundColor(colors.text)
-                .autocapitalization(.none)
-                .autocorrectionDisabled()
-            }
-            .padding()
-            .background(colors.bgInput)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.lg)
-                    .stroke(
-                        viewModel.submitError != nil ? colors.error :
-                        viewModel.submitSuccess ? colors.success :
-                        colors.border,
-                        lineWidth: 1
-                    )
-            )
-
-            // Error / success messages
-            if let err = viewModel.submitError {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.circle")
-                        .font(.system(size: 13))
-                    Text(err)
-                        .font(AppFont.Body.regular(13))
-                }
-                .foregroundColor(colors.error)
-            }
-
-            if viewModel.submitSuccess {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 13))
-                    Text("Clip submitted successfully!")
-                        .font(AppFont.Body.regular(13))
-                }
-                .foregroundColor(colors.success)
-                .transition(.opacity.combined(with: .scale))
-            }
-
-            // Submit button
-            Button {
-                Task { await viewModel.submitClip() }
-            } label: {
-                Group {
-                    if viewModel.isSubmitting {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("Submit clip")
-                            .font(AppFont.Body.semibold(16))
-                            .foregroundColor(.white)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 50)
-                .background(colors.accent)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-                .opacity(viewModel.isSubmitting ? 0.7 : 1)
-            }
-            .buttonStyle(PressableButtonStyle())
-            .disabled(viewModel.isSubmitting)
+                .foregroundColor(colors.textSecondary)
+                .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 
     // MARK: - Submissions Section
@@ -390,7 +554,6 @@ struct CampaignDetailView: View {
             Text("Your submissions")
                 .font(AppFont.Display.semibold(16))
                 .foregroundColor(colors.text)
-
             VStack(spacing: 1) {
                 ForEach(viewModel.submissions) { sub in
                     SubmissionRow(submission: sub, colors: colors)
@@ -406,12 +569,260 @@ struct CampaignDetailView: View {
 
     // MARK: - Skeleton
 
-    private var skeletonDetail: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SkeletonRect(height: 220)
-            SkeletonRect(height: 28).padding(.horizontal, Layout.pagePadX)
-            SkeletonRect(height: 16).padding(.horizontal, Layout.pagePadX).frame(maxWidth: 300)
-            SkeletonRect(height: 16).padding(.horizontal, Layout.pagePadX).frame(maxWidth: 250)
+    private var skeletonView: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                SkeletonRect(height: 260)
+                VStack(alignment: .leading, spacing: 12) {
+                    SkeletonRect(height: 26).frame(maxWidth: .infinity)
+                    SkeletonRect(height: 18).frame(maxWidth: 220)
+                    SkeletonRect(height: 14)
+                    SkeletonRect(height: 50).padding(.top, 4)
+                }
+                .padding(.horizontal, Layout.pagePadX)
+                .padding(.top, 16)
+            }
+        }
+        .ignoresSafeArea(edges: .top)
+    }
+}
+
+// MARK: - Countdown Text
+
+private struct CountdownText: View {
+    let endDate: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(countdownString(from: endDate, now: context.date))
         }
     }
+
+    private func countdownString(from date: Date, now: Date) -> String {
+        let diff = max(0, date.timeIntervalSince(now))
+        if diff == 0 { return "Ended" }
+        let totalSeconds = Int(diff)
+        let days    = totalSeconds / 86400
+        let hours   = (totalSeconds % 86400) / 3600
+        let minutes = (totalSeconds % 3600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02dD : %02dH : %02dM : %02dS", days, hours, minutes, seconds)
+    }
+}
+
+// MARK: - Submit Clip Bottom Sheet
+
+struct SubmitClipSheet: View {
+    @Bindable var viewModel: CampaignDetailViewModel
+    @Binding var isPresented: Bool
+    @Environment(\.appColors) private var colors
+    @FocusState private var urlFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Submit a clip")
+                        .font(AppFont.Display.bold(20))
+                        .foregroundColor(colors.text)
+                    if let campaign = viewModel.campaign {
+                        Text(campaign.title)
+                            .font(AppFont.Body.regular(13))
+                            .foregroundColor(colors.textSecondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                Button {
+                    isPresented = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(colors.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(colors.bgSecondary)
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 24)
+            .padding(.bottom, 20)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // URL Input
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Video URL")
+                            .font(AppFont.Body.semibold(13))
+                            .foregroundColor(colors.text)
+
+                        HStack(spacing: 10) {
+                            if let platform = viewModel.detectedPlatform {
+                                PlatformIconRow(platforms: [platform], size: 18, color: colors.accent)
+                                    .frame(width: 22)
+                            } else {
+                                Image(systemName: "link")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(colors.textTertiary)
+                                    .frame(width: 22)
+                            }
+
+                            TextField("Paste your video URL here", text: Binding(
+                                get: { viewModel.videoURL },
+                                set: { viewModel.onURLChange($0) }
+                            ))
+                            .font(AppFont.Body.regular(14))
+                            .foregroundColor(colors.text)
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                            .keyboardType(.URL)
+                            .focused($urlFocused)
+
+                            if !viewModel.videoURL.isEmpty {
+                                Button {
+                                    viewModel.onURLChange("")
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 16))
+                                        .foregroundColor(colors.textTertiary)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 14)
+                        .background(colors.bgInput)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Radius.lg)
+                                .stroke(
+                                    viewModel.submitError != nil ? colors.error :
+                                    viewModel.submitSuccess ? colors.success :
+                                    urlFocused ? colors.accent :
+                                    colors.border,
+                                    lineWidth: 1
+                                )
+                        )
+
+                        // Platform detection hint
+                        if let platform = viewModel.detectedPlatform {
+                            HStack(spacing: 6) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 13))
+                                    .foregroundColor(colors.success)
+                                Text("\(platform.capitalized) URL detected")
+                                    .font(AppFont.Body.regular(13))
+                                    .foregroundColor(colors.success)
+                            }
+                        }
+                    }
+
+                    // Error
+                    if let err = viewModel.submitError {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .font(.system(size: 14))
+                            Text(err)
+                                .font(AppFont.Body.regular(13))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .foregroundColor(colors.error)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(colors.error.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                    }
+
+                    // Success
+                    if viewModel.submitSuccess {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(colors.success)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Clip submitted!")
+                                    .font(AppFont.Body.semibold(14))
+                                    .foregroundColor(colors.success)
+                                Text("We'll review it and update your workspace.")
+                                    .font(AppFont.Body.regular(12))
+                                    .foregroundColor(colors.textSecondary)
+                            }
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(colors.success.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+                    }
+
+                    // Info row
+                    if let campaign = viewModel.campaign, !campaign.cpmLabel.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 13))
+                                .foregroundColor(colors.textTertiary)
+                            Text("Earn \(campaign.cpmLabel) once your clip is approved.")
+                                .font(AppFont.Body.regular(12))
+                                .foregroundColor(colors.textSecondary)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 20)
+            }
+
+            // Bottom buttons
+            VStack(spacing: 10) {
+                Button {
+                    Task {
+                        await viewModel.submitClip()
+                        if viewModel.submitSuccess {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            isPresented = false
+                        }
+                    }
+                } label: {
+                    Group {
+                        if viewModel.isSubmitting {
+                            ProgressView().tint(.white)
+                        } else {
+                            Text("Submit clip")
+                                .font(AppFont.Body.semibold(16))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(viewModel.isSubmitting ? colors.accent.opacity(0.7) : colors.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+                }
+                .buttonStyle(PressableButtonStyle())
+                .disabled(viewModel.isSubmitting || viewModel.videoURL.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                Button { isPresented = false } label: {
+                    Text("Cancel")
+                        .font(AppFont.Body.medium(14))
+                        .foregroundColor(colors.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 32)
+        }
+        .background(colors.bg)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { urlFocused = true }
+        }
+    }
+}
+
+// MARK: - Helpers
+
+private func formatViews(_ views: Int) -> String {
+    if views >= 1_000_000 { return String(format: "%.1fM", Double(views) / 1_000_000) }
+    if views >= 1_000     { return String(format: "%.1fK", Double(views) / 1_000) }
+    return "\(views)"
 }

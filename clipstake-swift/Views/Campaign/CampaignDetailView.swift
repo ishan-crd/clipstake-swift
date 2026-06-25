@@ -199,15 +199,15 @@ struct CampaignDetailView: View {
                 Spacer()
                 HStack(spacing: 6) {
                     if campaign.status == "active" {
-                        heroBadge("Active", fg: Color(hex: "#16A34A"), bg: Color(hex: "#DCFCE7"))
+                        heroBadge("Active", fg: Palette.Green.g600, bg: Palette.Green.g100)
                     } else if campaign.status == "paused" {
                         heroBadge("Paused", fg: .orange, bg: Color.orange.opacity(0.2))
                     }
                     if campaign.requiresLogo == true {
-                        heroBadge("Logo", fg: Color(hex: "#57534E"), bg: Color.white.opacity(0.85))
+                        heroBadge("Logo", fg: Palette.Sand.s600, bg: Color.white.opacity(0.85))
                     }
                     if campaign.isPrivate == true {
-                        heroBadge("Private", fg: Color(hex: "#57534E"), bg: Color.white.opacity(0.85))
+                        heroBadge("Private", fg: Palette.Sand.s600, bg: Color.white.opacity(0.85))
                     }
                 }
             }
@@ -344,7 +344,7 @@ struct CampaignDetailView: View {
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
             .frame(height: 50)
-            .background(colors.accent)
+            .background(Palette.Crimson.c600)
             .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
         }
         .buttonStyle(PressableButtonStyle())
@@ -795,7 +795,7 @@ struct SubmitClipSheet: View {
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background(viewModel.isSubmitting ? colors.accent.opacity(0.7) : colors.accent)
+                    .background(viewModel.isSubmitting ? Palette.Crimson.c600.opacity(0.7) : Palette.Crimson.c600)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
                 }
                 .buttonStyle(PressableButtonStyle())

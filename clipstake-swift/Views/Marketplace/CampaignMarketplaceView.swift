@@ -260,7 +260,7 @@ struct CampaignMarketplaceView: View {
 
                 // Sub cards
                 HStack(spacing: 8) {
-                    miniCard(title: "Total Earned", value: balance.formattedOwed, valueColor: Palette.Green.g700)
+                    miniCard(title: "Total Earned", value: balance.formattedOwed, valueColor: Palette.Green.g600)
                     miniCard(title: "In Review", value: balance.formattedInReview, valueColor: Palette.Amber.a700)
                 }
             }
@@ -450,17 +450,29 @@ struct SegmentedProgressBar: View {
     let percentage: Double
     let colors: AppColors
     private let totalSegments = 45
+    private let fullHeight: CGFloat = 18
 
     var body: some View {
-        let filled = Int((min(100, max(0, percentage)) / 100.0) * Double(totalSegments))
+        let pct = min(100, max(0, percentage))
+        let filled = Int((pct / 100.0) * Double(totalSegments))
+        let emptyCount = max(1, totalSegments - filled)
+
         HStack(spacing: 3) {
             ForEach(0..<totalSegments, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 0.5)
-                    .fill(i < filled ? colors.progressFilled : colors.progressEmpty)
-                    .frame(height: 4)
+                let isFilled = i < filled
+                // Empty segments taper in height from 100% → ~55% as they get further from the fill point
+                let emptyIdx = isFilled ? 0 : (i - filled)
+                let heightRatio: CGFloat = isFilled
+                    ? 1.0
+                    : max(0.55, 1.0 - CGFloat(emptyIdx) / CGFloat(emptyCount) * 0.45)
+
+                Capsule()
+                    .fill(isFilled ? colors.progressFilled : colors.progressEmpty)
+                    .frame(height: fullHeight * heightRatio)
             }
         }
         .frame(maxWidth: .infinity)
+        .frame(height: fullHeight)
     }
 }
 
@@ -483,6 +495,6 @@ struct CampaignSkeletonCard: View {
         .padding(16)
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg).stroke(Color(hex: "#e7e5e4"), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg).stroke(Palette.Sand.s200, lineWidth: 1))
     }
 }

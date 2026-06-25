@@ -113,7 +113,7 @@ struct LoginView: View {
             RoundedRectangle(cornerRadius: Radius.xl3)
                 .fill(
                     LinearGradient(
-                        colors: [Color(hex: "#FFFFFF"), Color(hex: "#F5F3F0")],
+                        colors: [.white, Palette.Sand.s100],
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -124,7 +124,7 @@ struct LoginView: View {
                 VStack(spacing: 12) {
                     Text(slides[activeSlide].heading)
                         .font(AppFont.Display.medium(24))
-                        .foregroundColor(Color(hex: "#3D0A14"))
+                        .foregroundColor(Palette.Crimson.c900)
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
                         .opacity(slideOpacity)
@@ -144,7 +144,7 @@ struct LoginView: View {
                 HStack(spacing: 6) {
                     ForEach(slides.indices, id: \.self) { i in
                         Capsule()
-                            .fill(i == activeSlide ? Color(hex: "#8B1A2A") : Color(hex: "#D4C5BC"))
+                            .fill(i == activeSlide ? Palette.Crimson.c500 : Palette.Sand.s300)
                             .frame(width: i == activeSlide ? 16 : 4, height: 4)
                             .animation(.spring(response: 0.3), value: activeSlide)
                     }
@@ -200,7 +200,7 @@ struct LoginView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 44)
-                        .background(email.isEmpty ? Color(hex: "#8B1A2A").opacity(0.6) : Color(hex: "#8B1A2A"))
+                        .background(email.isEmpty ? Palette.Crimson.c500.opacity(0.6) : Palette.Crimson.c500)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.sm))
                     }
                     .disabled(isLoading || email.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -337,7 +337,7 @@ private struct OTPView: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Verify your email")
                     .font(AppFont.Display.medium(28))
-                    .foregroundColor(Color(hex: "#3D0A14"))
+                    .foregroundColor(Palette.Crimson.c900)
                     .padding(.top, 60)
                     .padding(.bottom, 12)
 
@@ -376,7 +376,7 @@ private struct OTPView: View {
                     }
                     Button("Resend") { Task { await resend() } }
                         .font(AppFont.Body.semibold(14))
-                        .foregroundColor(resendTimer > 0 ? Color(hex: "#D4A0A8") : Color(hex: "#8B1A2A"))
+                        .foregroundColor(resendTimer > 0 ? Palette.Crimson.c500.opacity(0.4) : Palette.Crimson.c500)
                         .disabled(resendTimer > 0)
                 }
                 .padding(.top, 8)
@@ -395,7 +395,7 @@ private struct OTPView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 48)
-                    .background(otpValue.count < 6 ? Color(hex: "#8B1A2A").opacity(0.6) : Color(hex: "#8B1A2A"))
+                    .background(otpValue.count < 6 ? Palette.Crimson.c500.opacity(0.6) : Palette.Crimson.c500)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md))
                 }
                 .disabled(isLoading || otpValue.count < 6)

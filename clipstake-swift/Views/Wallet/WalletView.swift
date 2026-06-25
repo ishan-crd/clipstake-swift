@@ -4,7 +4,7 @@ import SwiftUI
 
 @Observable
 @MainActor final class WalletViewModel {
-    var balance: BalanceBreakdown?
+    var balance: BalanceBreakdown = .zero
     var transactions: [Transaction] = []
     var isLoading = false
     var isRefreshing = false
@@ -32,7 +32,7 @@ import SwiftUI
 
     private func fetchBalance() async {
         do {
-            let result: BalanceBreakdown = try await TRPCClient.shared.query("campaign.loadUserBalanceBreakdown")
+            let result: BalanceBreakdown = try await TRPCClient.shared.query("campaign.getUserBalance")
             balance = result
         } catch {}
     }
@@ -74,15 +74,9 @@ struct WalletView: View {
                     .padding(.bottom, 20)
 
                     // Balance card
-                    if let balance = viewModel.balance {
-                        BalanceCard(balance: balance, colors: colors)
-                            .padding(.horizontal, Layout.pagePadX)
-                            .padding(.bottom, 20)
-                    } else if viewModel.isLoading {
-                        SkeletonRect(height: 200)
-                            .padding(.horizontal, Layout.pagePadX)
-                            .padding(.bottom, 20)
-                    }
+                    BalanceCard(balance: viewModel.balance, colors: colors)
+                        .padding(.horizontal, Layout.pagePadX)
+                        .padding(.bottom, 20)
 
                     // Transactions
                     VStack(alignment: .leading, spacing: 12) {

@@ -14,6 +14,12 @@ import SwiftUI
         let title: String
         let thumbnail: String?
         let submissions: [Submission]
+
+        var thumbnailURL: URL? {
+            guard let t = thumbnail, !t.isEmpty else { return nil }
+            if t.hasPrefix("http") { return URL(string: t) }
+            return URL(string: "https://cdn.clipstake.com/\(t)")
+        }
     }
 
     func load() async {
@@ -121,9 +127,7 @@ private struct WorkspaceCampaignSection: View {
         VStack(alignment: .leading, spacing: 10) {
             // Section header
             HStack(spacing: 10) {
-                AsyncImage(url: campaign.thumbnail.flatMap { t in
-                    URL(string: t.hasPrefix("http") ? t : "https://cdn.clipstake.com/\(t)")
-                }) { phase in
+                AsyncImage(url: campaign.thumbnailURL) { phase in
                     if case .success(let img) = phase {
                         img.resizable().scaledToFill()
                     } else {

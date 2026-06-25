@@ -5,7 +5,7 @@ import SwiftUI
 @Observable
 @MainActor final class CampaignDetailViewModel {
     let campaignId: String
-    var campaign: Campaign?
+    var campaign: CampaignDetail?
     var submissions: [Submission] = []
     var isLoading = false
     var isSubmitting = false
@@ -53,7 +53,7 @@ import SwiftUI
         do {
             struct SubmitInput: Encodable { let campaignId: String; let videoUrl: String }
             let _: Submission = try await TRPCClient.shared.mutate(
-                "submission.submit",
+                "submission.create",
                 input: SubmitInput(campaignId: campaignId, videoUrl: urlTrimmed)
             )
             videoURL = ""
@@ -72,7 +72,10 @@ import SwiftUI
     private func fetchCampaign() async {
         do {
             struct Input: Encodable { let id: String }
-            let c: Campaign = try await TRPCClient.shared.query("campaign.getById", input: Input(id: campaignId))
+            let c: CampaignDetail = try await TRPCClient.shared.query(
+                "campaign.getCampaignDetail",
+                input: Input(id: campaignId)
+            )
             campaign = c
         } catch let err as AppError {
             error = err
@@ -83,11 +86,7 @@ import SwiftUI
 
     private func fetchUserSubmissions() async {
         do {
-            struct Input: Encodable { let campaignId: String }
-            let subs: [Submission] = try await TRPCClient.shared.query(
-                "submission.list",
-                input: Input(campaignId: campaignId)
-            )
+            let subs: [Submission] = try await TRPCClient.shared.query("submission.list")
             submissions = subs
         } catch {}
     }
@@ -177,7 +176,7 @@ struct CampaignDetailView: View {
 
     // MARK: - Hero
 
-    private func heroSection(_ campaign: Campaign) -> some View {
+    private func heroSection(_ campaign: CampaignDetail) -> some View {
         ZStack(alignment: .bottom) {
             AsyncImage(url: campaign.thumbnailURL) { phase in
                 if case .success(let img) = phase {
@@ -212,7 +211,7 @@ struct CampaignDetailView: View {
                         .frame(width: 28, height: 28)
                         .clipShape(Circle())
                     }
-                    Text(campaign.brandName ?? "")
+                    Text(campaign.brandName)
                         .font(AppFont.Body.medium(13))
                         .foregroundColor(.white.opacity(0.9))
                 }
@@ -247,13 +246,13 @@ struct CampaignDetailView: View {
 
     // MARK: - Campaign Info
 
-    private func campaignInfo(_ campaign: Campaign) -> some View {
+    private func campaignInfo(_ campaign: CampaignDetail) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(campaign.title)
                 .font(AppFont.Display.bold(22))
                 .foregroundColor(colors.text)
 
-            if let desc = campaign.description, !desc.isEmpty {
+            if let desc = campaign.descriptionText, !desc.isEmpty {
                 Text(desc)
                     .font(AppFont.Body.regular(14))
                     .foregroundColor(colors.textSecondary)
@@ -270,7 +269,9 @@ struct CampaignDetailView: View {
 
             // CPM info
             HStack(spacing: 16) {
-                infoChip(label: "CPM", value: campaign.cpmLabel ?? "\(campaign.cpmCents / 100)¢")
+                if !campaign.cpmLabel.isEmpty {
+                    infoChip(label: "CPM", value: campaign.cpmLabel)
+                }
                 infoChip(label: "Budget", value: campaign.formattedBudget)
                 if !campaign.endsInLabel.isEmpty {
                     infoChip(label: "Deadline", value: campaign.endsInLabel)

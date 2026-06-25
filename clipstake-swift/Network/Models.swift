@@ -14,50 +14,48 @@ struct AppUser: Codable, Identifiable, Equatable {
 }
 
 // MARK: - Campaign
+// Field names match the `campaign.listMarketplace` tRPC response exactly.
 
 struct Campaign: Codable, Identifiable {
     let id: String
-    let title: String
-    let description: String?
-    let status: String
-    let budgetCents: Int
-    let remainingBudgetCents: Int
-    let cpmCents: Int
-    let maxPayoutPerVideo: Int?
-    let endsAt: String?
-    let thumbnail: String?
-    let category: String?
-    let platforms: [String]
-    let submissionCount: Int
-    let totalViewCount: Int
-    let brandName: String?
-    let brandLogo: String?
+    let name: String
+    let thumbnailUrl: String?
+    let brandName: String
     let brandColor: String?
-    let cpmLabel: String?
+    let brandLogo: String?
+    let status: String
+    let category: String?
+    let cpmDollars: Double
+    let spentDollars: Double
+    let budgetDollars: Double
+    let spentPercent: Double
+    let endDate: String?
+    let platforms: [String]
+
+    // Backward-compat aliases used by other views
+    var title: String { name }
+    var thumbnail: String? { thumbnailUrl }
+    var cpmCents: Int { Int(cpmDollars * 100) }
 
     var thumbnailURL: URL? {
-        guard let t = thumbnail else { return nil }
+        guard let t = thumbnailUrl, !t.isEmpty else { return nil }
         if t.hasPrefix("http") { return URL(string: t) }
         return URL(string: "https://cdn.clipstake.com/\(t)")
     }
 
     var brandLogoURL: URL? {
-        guard let l = brandLogo else { return nil }
+        guard let l = brandLogo, !l.isEmpty else { return nil }
         if l.hasPrefix("http") { return URL(string: l) }
         return URL(string: "https://cdn.clipstake.com/\(l)")
     }
 
-    var budgetPercentage: Double {
-        guard budgetCents > 0 else { return 0 }
-        let spent = budgetCents - remainingBudgetCents
-        return Double(spent) / Double(budgetCents) * 100
-    }
+    var budgetPercentage: Double { spentPercent }
 
     var endsInLabel: String {
-        guard let iso = endsAt else { return "" }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+        guard let iso = endDate, !iso.isEmpty else { return "" }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
         guard let date else { return "" }
         let diff = date.timeIntervalSinceNow
         if diff <= 0 { return "Ended" }
@@ -67,8 +65,10 @@ struct Campaign: Codable, Identifiable {
         return "ends in \(hours)h"
     }
 
-    var formattedBudget: String { formatDollars(budgetCents) }
-    var formattedRemaining: String { formatDollars(remainingBudgetCents) }
+    var cpmLabel: String { "$\(String(format: "%.2f", cpmDollars)) / 1k views" }
+    var formattedBudget: String { "$\(String(format: "%.2f", budgetDollars))" }
+    var formattedPaidAmount: String { "$\(String(format: "%.2f", spentDollars))" }
+    var formattedRemaining: String { "$\(String(format: "%.2f", max(0, budgetDollars - spentDollars)))" }
 }
 
 // MARK: - Submission
@@ -116,17 +116,24 @@ enum StatusColor {
 }
 
 // MARK: - Balance
+// Field names match the `campaign.getUserBalance` tRPC response exactly.
 
 struct BalanceBreakdown: Codable {
-    let userWalletCents: Int
-    let creatorOwedCents: Int
-    let referrerOwedCents: Int
+    let availableCents: Int
+    let totalBalanceCents: Int
+    let withdrawableBalanceCents: Int
 
-    var totalCents: Int { userWalletCents + creatorOwedCents + referrerOwedCents }
-    var formattedTotal: String { formatDollars(totalCents) }
-    var formattedWallet: String { formatDollars(userWalletCents) }
-    var formattedOwed: String { formatDollars(creatorOwedCents) }
-    var formattedReferrer: String { formatDollars(referrerOwedCents) }
+    static let zero = BalanceBreakdown(availableCents: 0, totalBalanceCents: 0, withdrawableBalanceCents: 0)
+
+    var inReviewCents: Int { max(0, withdrawableBalanceCents - availableCents) }
+
+    var formattedTotal: String { formatDollars(availableCents) }
+    var formattedOwed: String { formatDollars(totalBalanceCents) }
+    var formattedInReview: String { formatDollars(inReviewCents) }
+
+    // Backward-compat aliases used by WalletView
+    var formattedWallet: String { formatDollars(withdrawableBalanceCents) }
+    var formattedReferrer: String { "$0.00" }
 }
 
 // MARK: - Referrals
@@ -186,6 +193,77 @@ struct Transaction: Codable, Identifiable {
         df.dateStyle = .medium
         return df.string(from: date)
     }
+}
+
+// MARK: - Campaign Detail
+// Matches the `campaign.getCampaignDetail` tRPC response (different shape from listMarketplace).
+
+struct CampaignDetail: Codable, Identifiable {
+    let id: String
+    let name: String
+    let thumbnailUrl: String?
+    let brand: Brand?
+    let status: String
+    let category: String?
+    let description: String?
+    let campaignAbout: String?
+    let endDate: String?
+    let platforms: [String]
+    let budgetDollars: Double?
+    let spentDollars: Double?
+    let spentPercent: Double?
+    let payPer1kViews: Int?
+    let minViews: Int?
+    let maxPayoutPerVideo: Int?
+    let resources: [CampaignResource]?
+    let campaignInstructions: String?
+
+    struct Brand: Codable {
+        let name: String?
+        let primaryColor: String?
+        let logoPath: String?
+    }
+
+    struct CampaignResource: Codable {
+        let name: String
+        let url: String
+    }
+
+    var title: String { name }
+    var brandName: String { brand?.name ?? "" }
+    var brandColor: String { brand?.primaryColor ?? "#CE1111" }
+
+    var thumbnailURL: URL? {
+        guard let t = thumbnailUrl, !t.isEmpty else { return nil }
+        return t.hasPrefix("http") ? URL(string: t) : URL(string: "https://cdn.clipstake.com/\(t)")
+    }
+    var brandLogoURL: URL? {
+        guard let l = brand?.logoPath, !l.isEmpty else { return nil }
+        return l.hasPrefix("http") ? URL(string: l) : URL(string: "https://cdn.clipstake.com/\(l)")
+    }
+
+    var descriptionText: String? { campaignAbout ?? description }
+
+    var endsInLabel: String {
+        guard let iso = endDate, !iso.isEmpty else { return "" }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+        let diff = date.timeIntervalSinceNow
+        if diff <= 0 { return "Ended" }
+        let days = Int(diff / 86400)
+        let hours = Int(diff.truncatingRemainder(dividingBy: 86400) / 3600)
+        return days > 0 ? "ends in \(days)d" : "ends in \(hours)h"
+    }
+
+    var cpmLabel: String {
+        guard let p = payPer1kViews else { return "" }
+        return "$\(String(format: "%.2f", Double(p) / 100)) / 1k views"
+    }
+    var formattedBudget: String {
+        "$\(String(format: "%.2f", budgetDollars ?? 0))"
+    }
+    var budgetPercentage: Double { spentPercent ?? 0 }
 }
 
 // MARK: - Paginated Response

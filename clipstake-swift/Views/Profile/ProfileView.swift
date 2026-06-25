@@ -37,7 +37,7 @@ import SwiftUI
 
     private func fetchBalance() async {
         do {
-            let b: BalanceBreakdown = try await TRPCClient.shared.query("campaign.loadUserBalanceBreakdown")
+            let b: BalanceBreakdown = try await TRPCClient.shared.query("campaign.getUserBalance")
             balance = b
         } catch {}
     }

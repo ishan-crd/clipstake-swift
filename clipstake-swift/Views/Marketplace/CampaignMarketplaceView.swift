@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Campaign Marketplace View Model
+// MARK: - View Model
 
 @Observable
 @MainActor final class CampaignMarketplaceViewModel {
@@ -8,11 +8,10 @@ import SwiftUI
     var isLoading = false
     var isLoadingMore = false
     var isRefreshing = false
-    var error: AppError?
+    var error: String?
     var hasMore = true
-    var cursor: String?
-    var displayName: String = ""
-    var balance: BalanceBreakdown?
+    var offset = 0
+    var balance: BalanceBreakdown = .zero
 
     private let pageSize = 5
 
@@ -21,59 +20,55 @@ import SwiftUI
         isLoading = true
         error = nil
         defer { isLoading = false }
-        await fetchCampaigns(cursor: nil)
-        await fetchBalance()
-        await fetchDisplayName()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.fetchCampaigns(offset: 0) }
+            group.addTask { await self.fetchBalance() }
+        }
     }
 
     func refresh() async {
         isRefreshing = true
         defer { isRefreshing = false }
-        cursor = nil
+        offset = 0
         hasMore = true
-        await fetchCampaigns(cursor: nil)
-        await fetchBalance()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.fetchCampaigns(offset: 0) }
+            group.addTask { await self.fetchBalance() }
+        }
     }
 
     func loadMore() async {
         guard hasMore && !isLoadingMore && !isLoading else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
-        await fetchCampaigns(cursor: cursor)
+        await fetchCampaigns(offset: offset)
     }
 
-    private func fetchCampaigns(cursor: String?) async {
+    private func fetchCampaigns(offset: Int) async {
         do {
-            struct Input: Encodable { let limit: Int; let cursor: String? }
-            let result: PaginatedResponse<Campaign> = try await TRPCClient.shared.query(
-                "campaign.list",
-                input: Input(limit: pageSize, cursor: cursor)
+            struct Input: Encodable { let limit: Int; let offset: Int }
+            let rows: [Campaign] = try await TRPCClient.shared.query(
+                "campaign.listMarketplace",
+                input: Input(limit: pageSize, offset: offset)
             )
-            if cursor == nil {
-                campaigns = result.items
+            if offset == 0 {
+                campaigns = rows
             } else {
-                campaigns.append(contentsOf: result.items)
+                let existingIds = Set(campaigns.map(\.id))
+                campaigns.append(contentsOf: rows.filter { !existingIds.contains($0.id) })
             }
-            self.cursor = result.nextCursor
-            self.hasMore = result.hasMore ?? false
-        } catch let err as AppError {
-            error = err
+            self.offset = offset + rows.count
+            self.hasMore = rows.count >= pageSize
         } catch {
-            self.error = .unknown(error)
+            if offset == 0 { self.error = (error as? AppError)?.errorDescription ?? error.localizedDescription }
         }
     }
 
     private func fetchBalance() async {
         do {
-            let result: BalanceBreakdown = try await TRPCClient.shared.query("campaign.loadUserBalanceBreakdown")
+            let result: BalanceBreakdown = try await TRPCClient.shared.query("campaign.getUserBalance")
             balance = result
-        } catch {}
-    }
 
-    private func fetchDisplayName() async {
-        do {
-            let user: AppUser = try await TRPCClient.shared.query("user.getProfile")
-            displayName = user.name
         } catch {}
     }
 }
@@ -87,6 +82,11 @@ struct CampaignMarketplaceView: View {
     @State private var viewModel = CampaignMarketplaceViewModel()
     @State private var appeared = false
 
+    private var displayName: String {
+        let u = sessionManager.currentUser
+        return u?.username ?? u?.name ?? u?.email ?? ""
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             LinearGradient(
@@ -97,33 +97,39 @@ struct CampaignMarketplaceView: View {
             .ignoresSafeArea()
 
             ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: []) {
+                VStack(spacing: 0) {
                     // Header
                     headerSection
                         .padding(.horizontal, Layout.pagePadX)
-                        .padding(.top, 16)
-                        .padding(.bottom, 8)
+                        .padding(.vertical, 12)
 
                     // Balance card
-                    if let balance = viewModel.balance {
-                        balanceCard(balance)
-                            .padding(.horizontal, Layout.pagePadX)
-                            .padding(.bottom, 16)
-                    } else if viewModel.isLoading {
-                        SkeletonRect(height: 140)
-                            .padding(.horizontal, Layout.pagePadX)
-                            .padding(.bottom, 16)
-                    }
+                    balanceCard(viewModel.balance)
+                        .padding(.horizontal, Layout.pagePadX)
 
-                    // Campaigns section header
+                    // Invite banner
+                    inviteBanner
+                        .padding(.horizontal, Layout.pagePadX)
+                        .padding(.top, 16)
+
+                    // Section header
                     HStack {
                         Text("Recommended campaigns")
                             .font(AppFont.Display.semibold(14))
                             .foregroundColor(colors.text)
                         Spacer()
+                        HStack(spacing: 2) {
+                            Text("See all")
+                                .font(AppFont.Body.medium(13))
+                                .foregroundColor(colors.accent)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(colors.accent)
+                        }
                     }
                     .padding(.horizontal, Layout.pagePadX)
-                    .padding(.bottom, 12)
+                    .padding(.top, 24)
+                    .padding(.bottom, 16)
 
                     // Campaign list
                     if viewModel.isLoading && viewModel.campaigns.isEmpty {
@@ -131,13 +137,25 @@ struct CampaignMarketplaceView: View {
                             ForEach(0..<3, id: \.self) { _ in CampaignSkeletonCard() }
                         }
                         .padding(.horizontal, Layout.pagePadX)
+                    } else if let err = viewModel.error {
+                        VStack(spacing: 12) {
+                            Text(err)
+                                .font(AppFont.Body.regular(14))
+                                .foregroundColor(colors.textSecondary)
+                                .multilineTextAlignment(.center)
+                            Button("Retry") { Task { await viewModel.load() } }
+                                .font(AppFont.Body.semibold(14))
+                                .foregroundColor(colors.accent)
+                        }
+                        .padding(.horizontal, Layout.pagePadX)
+                        .padding(.vertical, 40)
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(Array(viewModel.campaigns.enumerated()), id: \.element.id) { index, campaign in
                                 NavigationLink(value: campaign.id) {
                                     CampaignCard(campaign: campaign, colors: colors)
                                         .opacity(appeared ? 1 : 0)
-                                        .offset(y: appeared ? 0 : 20)
+                                        .offset(y: appeared ? 0 : 16)
                                         .animation(
                                             .cardAppear.delay(Double(min(index, 5)) * 0.04),
                                             value: appeared
@@ -145,7 +163,7 @@ struct CampaignMarketplaceView: View {
                                 }
                                 .buttonStyle(PressableButtonStyle())
                                 .onAppear {
-                                    if index == viewModel.campaigns.count - 1 {
+                                    if index == viewModel.campaigns.count - 2 {
                                         Task { await viewModel.loadMore() }
                                     }
                                 }
@@ -160,10 +178,8 @@ struct CampaignMarketplaceView: View {
                             .padding(.vertical, 20)
                     }
 
-                    // Tab bar spacer
                     Spacer(minLength: 100)
                 }
-                .padding(.top, 0)
             }
             .refreshable { await viewModel.refresh() }
             .navigationDestination(for: String.self) { campaignId in
@@ -181,80 +197,81 @@ struct CampaignMarketplaceView: View {
 
     private var headerSection: some View {
         HStack(spacing: 12) {
+            // Logo icon (red triangle play mark)
             Image("logo")
                 .resizable()
                 .scaledToFit()
-                .frame(height: 24)
-                .foregroundColor(colors.text)
+                .frame(width: 32, height: 32)
 
-            Spacer()
-
-            VStack(alignment: .trailing, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text("Welcome back")
-                    .font(AppFont.Body.regular(12))
+                    .font(AppFont.Body.regular(13))
                     .foregroundColor(colors.textSecondary)
-                Text(viewModel.displayName.isEmpty ? "..." : viewModel.displayName)
-                    .font(AppFont.Body.semibold(15))
+                Text(displayName.isEmpty ? "..." : displayName)
+                    .font(AppFont.Body.semibold(16))
                     .foregroundColor(colors.text)
             }
+
+            Spacer()
         }
     }
 
     // MARK: - Balance Card
 
-    private func balanceCard(_ balance: BalanceBreakdown) -> some View {
+    private func balanceCard(_ balance: BalanceBreakdown = .zero) -> some View {
         ZStack {
             LinearGradient(
                 colors: [colors.accent, colors.accentDark],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
-        .overlay(
+            .clipShape(RoundedRectangle(cornerRadius: Radius.xl))
+
             VStack(alignment: .leading, spacing: 16) {
+                // Top row: balance + details
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Avail. Balance")
-                            .font(AppFont.Body.medium(13))
-                            .foregroundColor(AppColors.onBrandWhite.opacity(0.85))
+                            .font(AppFont.Body.medium(14))
+                            .foregroundColor(.white)
                         Text(balance.formattedTotal)
                             .font(AppFont.Body.bold(32))
-                            .foregroundColor(AppColors.onBrandWhite)
+                            .foregroundColor(.white)
                     }
                     Spacer()
                     NavigationLink(value: "wallet") {
                         HStack(spacing: 6) {
-                            Image(systemName: "banknote")
+                            Image(systemName: "wallet.bifold")
                                 .font(.system(size: 14))
                             Text("Details")
                                 .font(AppFont.Body.medium(13))
                             Image(systemName: "chevron.right")
                                 .font(.system(size: 11))
                         }
-                        .foregroundColor(AppColors.onBrandWhite)
-                        .padding(.horizontal, space(2))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .overlay(
                             RoundedRectangle(cornerRadius: Radius.sm)
-                                .stroke(AppColors.onBrandWhite.opacity(0.5), lineWidth: 1)
+                                .stroke(Color.white.opacity(0.5), lineWidth: 1)
                         )
                     }
                 }
 
+                // Sub cards
                 HStack(spacing: 8) {
                     miniCard(title: "Total Earned", value: balance.formattedOwed, valueColor: Palette.Green.g700)
-                    miniCard(title: "In Review", value: "$0.00", valueColor: Palette.Amber.a700)
+                    miniCard(title: "In Review", value: balance.formattedInReview, valueColor: Palette.Amber.a700)
                 }
             }
             .padding(20)
-        )
-        .frame(height: 160)
+        }
+        .frame(height: 155)
     }
 
     private func miniCard(title: String, value: String, valueColor: Color) -> some View {
         LinearGradient(
-            colors: [Color.white.opacity(0.8), Color.white.opacity(0.9)],
+            colors: [Color.white.opacity(0.80), Color.white.opacity(0.90)],
             startPoint: .top,
             endPoint: .bottom
         )
@@ -262,7 +279,7 @@ struct CampaignMarketplaceView: View {
         .overlay(
             VStack(alignment: .leading, spacing: 8) {
                 Text(title)
-                    .font(AppFont.Body.regular(11))
+                    .font(AppFont.Body.regular(12))
                     .foregroundColor(Palette.Sand.s800)
                 Text(value)
                     .font(AppFont.Body.medium(14))
@@ -274,110 +291,156 @@ struct CampaignMarketplaceView: View {
         .frame(height: 60)
         .frame(maxWidth: .infinity)
     }
+
+    // MARK: - Invite Banner
+
+    private var inviteBanner: some View {
+        LinearGradient(
+            colors: [Palette.Mint.m100, Palette.Green.g100],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+        .overlay(
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: Radius.sm)
+                        .fill(Palette.Mint.m400)
+                        .frame(width: 36, height: 36)
+                    Image(systemName: "envelope.open.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Several brands have invited you!")
+                        .font(AppFont.Body.medium(14))
+                        .foregroundColor(Palette.Mint.m950)
+                    Text("Join their invite-only campaign now.")
+                        .font(AppFont.Body.regular(12))
+                        .foregroundColor(Palette.Mint.m950)
+                }
+                Spacer()
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(Palette.Mint.m950)
+            }
+            .padding(16)
+        )
+        .frame(height: 68)
+    }
 }
 
-// MARK: - Campaign Card
+// MARK: - Campaign Card (matches RN design: compact, no thumbnail)
 
 struct CampaignCard: View {
     let campaign: Campaign
     let colors: AppColors
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Thumbnail
-            ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: campaign.thumbnailURL) { phase in
-                    switch phase {
-                    case .success(let img):
-                        img.resizable().scaledToFill()
-                    default:
-                        Rectangle().fill(colors.bgTertiary)
+        VStack(spacing: 0) {
+            // Row 1: brand logo + title + meta + platform icons
+            HStack(spacing: 12) {
+                // Brand avatar
+                ZStack {
+                    RoundedRectangle(cornerRadius: Radius.md)
+                        .fill(Color(hex: campaign.brandColor ?? "#CE1111"))
+                        .frame(width: 40, height: 40)
+                    if let logoURL = campaign.brandLogoURL {
+                        AsyncImage(url: logoURL) { phase in
+                            if case .success(let img) = phase {
+                                img.resizable().scaledToFill()
+                            } else {
+                                EmptyView()
+                            }
+                        }
+                        .frame(width: 40, height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+                    } else {
+                        Text(String(campaign.brandName.prefix(1)).uppercased())
+                            .font(AppFont.Body.bold(18))
+                            .foregroundColor(.white)
+                    }
+                }
+                .frame(width: 40, height: 40)
+
+                // Title + meta
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(campaign.name)
+                        .font(AppFont.Body.semibold(15))
+                        .foregroundColor(colors.text)
+                        .lineLimit(1)
+
+                    HStack(spacing: 6) {
+                        Text(campaign.brandName)
+                            .font(AppFont.Body.medium(12))
+                            .foregroundColor(colors.textSecondary)
+                            .lineLimit(1)
+                        if !campaign.endsInLabel.isEmpty {
+                            Text("•")
+                                .font(.system(size: 10))
+                                .foregroundColor(colors.textTertiary)
+                            Text(campaign.endsInLabel)
+                                .font(AppFont.Body.medium(12))
+                                .foregroundColor(colors.textSecondary)
+                        }
+                        Spacer()
+                        PlatformIconRow(platforms: campaign.platforms, size: 16, color: colors.iconSecondary)
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: 160)
-                .clipped()
-                .clipShape(
-                    UnevenRoundedRectangle(
-                        topLeadingRadius: Radius.lg,
-                        bottomLeadingRadius: 0,
-                        bottomTrailingRadius: 0,
-                        topTrailingRadius: Radius.lg
-                    )
-                )
+            }
 
-                // Brand logo
-                if let logoURL = campaign.brandLogoURL {
-                    AsyncImage(url: logoURL) { phase in
-                        if case .success(let img) = phase {
-                            img.resizable().scaledToFill()
-                        } else {
-                            Circle().fill(colors.bgSecondary)
+            // Dotted separator
+            DottedLine()
+                .stroke(colors.divider, style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
+                .frame(height: 1)
+                .padding(.vertical, 8)
+
+            // Budget info + percentage
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("\(campaign.formattedPaidAmount) of \(campaign.formattedBudget) paid")
+                            .font(AppFont.Body.medium(13))
+                            .foregroundColor(colors.text)
+                        if !campaign.endsInLabel.isEmpty {
+                            Text("•")
+                                .font(.system(size: 10))
+                                .foregroundColor(colors.textTertiary)
+                            Text(campaign.endsInLabel)
+                                .font(AppFont.Body.regular(12))
+                                .foregroundColor(colors.textSecondary)
                         }
                     }
-                    .frame(width: 32, height: 32)
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
-                    .padding(10)
                 }
-
-                // CPM badge
-                HStack(spacing: 0) {
-                    Spacer()
-                    if let cpm = campaign.cpmLabel {
-                        Text(cpm)
-                            .font(AppFont.Body.semibold(11))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(colors.accent)
-                            .clipShape(Capsule())
-                            .padding(10)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-
-            // Card body
-            VStack(alignment: .leading, spacing: 8) {
-                // Title
-                Text(campaign.title)
-                    .font(AppFont.Body.semibold(14))
+                Spacer()
+                Text("\(Int(campaign.spentPercent))%")
+                    .font(AppFont.Body.regular(13))
                     .foregroundColor(colors.text)
-                    .lineLimit(2)
-
-                // Platform icons + end date
-                HStack(spacing: 8) {
-                    PlatformIconRow(platforms: campaign.platforms, size: 14, color: colors.iconSecondary)
-                    Spacer()
-                    Text(campaign.endsInLabel)
-                        .font(AppFont.Body.regular(12))
-                        .foregroundColor(colors.textSecondary)
-                }
-
-                // Progress bar
-                SegmentedProgressBar(percentage: campaign.budgetPercentage, colors: colors)
-
-                // Budget remaining
-                HStack {
-                    Text(campaign.formattedRemaining)
-                        .font(AppFont.Body.medium(12))
-                        .foregroundColor(colors.textProgress)
-                    Text("remaining")
-                        .font(AppFont.Body.regular(12))
-                        .foregroundColor(colors.textTertiary)
-                    Spacer()
-                    Text(campaign.formattedBudget)
-                        .font(AppFont.Body.regular(11))
-                        .foregroundColor(colors.textTertiary)
-                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
+
+            // Progress bar
+            SegmentedProgressBar(percentage: campaign.spentPercent, colors: colors)
+                .padding(.top, 8)
         }
+        .padding(16)
         .background(colors.bgCard)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
-        .shadow(color: AppShadow.card.color, radius: AppShadow.card.radius, x: AppShadow.card.x, y: AppShadow.card.y)
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.lg)
+                .stroke(colors.borderSecondary, lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Dotted Line Shape
+
+private struct DottedLine: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: 0, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        return path
     }
 }
 
@@ -386,17 +449,18 @@ struct CampaignCard: View {
 struct SegmentedProgressBar: View {
     let percentage: Double
     let colors: AppColors
-    private let totalSegments = 30
+    private let totalSegments = 45
 
     var body: some View {
-        let filled = Int((percentage / 100.0) * Double(totalSegments))
+        let filled = Int((min(100, max(0, percentage)) / 100.0) * Double(totalSegments))
         HStack(spacing: 3) {
             ForEach(0..<totalSegments, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 2)
+                RoundedRectangle(cornerRadius: 0.5)
                     .fill(i < filled ? colors.progressFilled : colors.progressEmpty)
                     .frame(height: 4)
             }
         }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -404,12 +468,21 @@ struct SegmentedProgressBar: View {
 
 struct CampaignSkeletonCard: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SkeletonRect(cornerRadius: Radius.lg, height: 160)
-            SkeletonRect(height: 16).padding(.horizontal, 12)
-            SkeletonRect(height: 12).frame(maxWidth: 120).padding(.horizontal, 12)
-            SkeletonRect(height: 8).padding(.horizontal, 12)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                SkeletonRect(cornerRadius: Radius.md, height: 40).frame(width: 40)
+                VStack(alignment: .leading, spacing: 6) {
+                    SkeletonRect(height: 14).frame(maxWidth: .infinity)
+                    SkeletonRect(height: 12).frame(maxWidth: 160)
+                }
+            }
+            SkeletonRect(height: 1)
+            SkeletonRect(height: 12).frame(maxWidth: 200)
+            SkeletonRect(height: 4)
         }
-        .padding(.bottom, 4)
+        .padding(16)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg).stroke(Color(hex: "#e7e5e4"), lineWidth: 1))
     }
 }

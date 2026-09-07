@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 // MARK: - Campaign Detail View Model
 
@@ -14,6 +15,7 @@ import SwiftUI
     var submitError: String?
     var submitSuccess = false
     var error: AppError?
+    var viewHistory: [ViewDataPoint] = []
 
     init(campaignId: String) {
         self.campaignId = campaignId
@@ -25,6 +27,7 @@ import SwiftUI
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.fetchCampaign() }
             group.addTask { await self.fetchSubmissionsPublic() }
+            group.addTask { await self.fetchViewHistory() }
         }
     }
 
@@ -78,6 +81,17 @@ import SwiftUI
         }
     }
 
+    private func fetchViewHistory() async {
+        do {
+            struct Input: Encodable { let campaignId: String }
+            let data: [ViewDataPoint] = try await TRPCClient.shared.query(
+                "campaign.getViewHistory",
+                input: Input(campaignId: campaignId)
+            )
+            viewHistory = data
+        } catch {}
+    }
+
     func fetchSubmissionsPublic() async {
         do {
             let subs: [Submission] = try await TRPCClient.shared.query("submission.list")
@@ -98,12 +112,18 @@ private enum CampaignTab: String, CaseIterable {
 // MARK: - View
 
 struct CampaignDetailView: View {
+    private enum GeneralSubTab: String, CaseIterable {
+        case totalViews  = "Total views"
+        case submissions = "Submissions"
+    }
+
     let campaignId: String
 
     @Environment(\.appColors) private var colors
     @Environment(\.dismiss) private var dismiss
     @State private var viewModel: CampaignDetailViewModel
     @State private var selectedTab: CampaignTab = .general
+    @State private var generalSubTab: GeneralSubTab = .totalViews
     @State private var showSubmitSheet = false
 
     init(campaignId: String) {
@@ -133,11 +153,12 @@ struct CampaignDetailView: View {
                         tabContent(campaign)
                             .padding(.horizontal, Layout.pagePadX)
                             .padding(.top, 16)
-                        if !viewModel.submissions.isEmpty {
-                            submissionsSection
-                                .padding(.horizontal, Layout.pagePadX)
-                                .padding(.top, 24)
-                        }
+                        // submissionsSection hidden per design
+                        // if !viewModel.submissions.isEmpty {
+                        //     submissionsSection
+                        //         .padding(.horizontal, Layout.pagePadX)
+                        //         .padding(.top, 24)
+                        // }
                         Spacer(minLength: 100)
                     }
                 }
@@ -397,7 +418,8 @@ struct CampaignDetailView: View {
 
     private func generalTab(_ campaign: CampaignDetail) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            // About
+
+            // About campaign
             if let desc = campaign.descriptionText, !desc.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("About campaign")
@@ -410,72 +432,222 @@ struct CampaignDetailView: View {
                 }
             }
 
-            // Resources
-            if let resources = campaign.resources, !resources.isEmpty {
+            // Resources + Visit website buttons
+            let hasResources = !(campaign.resources ?? []).isEmpty
+            let hasWebsite   = campaign.websiteUrl != nil
+            if hasResources || hasWebsite {
                 HStack(spacing: 10) {
-                    ForEach(resources, id: \.url) { resource in
+                    ForEach(campaign.resources ?? [], id: \.url) { resource in
                         if let url = URL(string: resource.url) {
                             Link(destination: url) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "arrow.down.to.line")
-                                        .font(.system(size: 13))
-                                    Text(resource.name)
-                                        .font(AppFont.Body.medium(13))
-                                }
-                                .foregroundColor(colors.text)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(colors.bgSecondary)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: Radius.md)
-                                        .stroke(colors.border, lineWidth: 1)
-                                )
+                                actionPill(icon: "arrow.down.to.line", label: resource.name)
                             }
                         }
                     }
                     if let website = campaign.websiteUrl, let url = URL(string: website) {
                         Link(destination: url) {
-                            HStack(spacing: 6) {
-                                Text("Visit website")
-                                    .font(AppFont.Body.medium(13))
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 12))
+                            actionPill(icon: "arrow.up.right", label: "Visit website", iconTrailing: true)
+                        }
+                    }
+                    Spacer()
+                }
+            }
+
+            // Sub-tab toggle: Total views | Submissions
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    ForEach(GeneralSubTab.allCases, id: \.self) { tab in
+                        Button { withAnimation(.easeInOut(duration: 0.15)) { generalSubTab = tab } } label: {
+                            VStack(spacing: 8) {
+                                Text(tab.rawValue)
+                                    .font(AppFont.Body.medium(14))
+                                    .foregroundColor(generalSubTab == tab ? colors.text : colors.textTertiary)
+                                Rectangle()
+                                    .fill(generalSubTab == tab ? colors.text : Color.clear)
+                                    .frame(height: 2)
                             }
-                            .foregroundColor(colors.text)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(colors.bgSecondary)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Radius.md)
-                                    .stroke(colors.border, lineWidth: 1)
-                            )
+                            .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.plain)
                     }
-                    Spacer()
                 }
-            } else if let website = campaign.websiteUrl, let url = URL(string: website) {
-                HStack {
-                    Link(destination: url) {
-                        HStack(spacing: 6) {
-                            Text("Visit website")
-                                .font(AppFont.Body.medium(13))
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 12))
-                        }
+                Divider()
+            }
+
+            // Sub-tab content
+            switch generalSubTab {
+            case .totalViews:
+                totalViewsContent(campaign)
+            case .submissions:
+                submissionsContent
+            }
+        }
+    }
+
+    private func actionPill(icon: String, label: String, iconTrailing: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            if !iconTrailing {
+                Image(systemName: icon).font(.system(size: 13))
+            }
+            Text(label).font(AppFont.Body.medium(13))
+            if iconTrailing {
+                Image(systemName: icon).font(.system(size: 12))
+            }
+        }
+        .foregroundColor(colors.text)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(colors.bgSecondary)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md).stroke(colors.border, lineWidth: 1))
+    }
+
+    // MARK: - Total Views Sub-tab
+
+    private func totalViewsContent(_ campaign: CampaignDetail) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+
+            // Big number + growth
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Total views")
+                    .font(AppFont.Body.regular(13))
+                    .foregroundColor(colors.textSecondary)
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(viewsDisplay(campaign.totalViews ?? 0))
+                        .font(AppFont.Display.bold(30))
                         .foregroundColor(colors.text)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(colors.bgSecondary)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: Radius.md)
-                                .stroke(colors.border, lineWidth: 1)
-                        )
+                    if let growth = campaign.viewsGrowthPercent {
+                        HStack(spacing: 3) {
+                            Image(systemName: growth >= 0 ? "arrow.up.right" : "arrow.down.right")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(String(format: "%.2f%%", abs(growth)))
+                                .font(AppFont.Body.medium(12))
+                        }
+                        .foregroundColor(growth >= 0 ? Palette.Green.g600 : Palette.Crimson.c500)
                     }
-                    Spacer()
                 }
+            }
+
+            // Sparkline chart
+            if !viewModel.viewHistory.isEmpty {
+                viewsChart
+            }
+
+            // Botted views prevented
+            if let botViews = campaign.botViews,
+               let totalViews = campaign.totalViews,
+               botViews > 0 {
+                bottedViewsCard(totalViews: totalViews, botViews: botViews)
+            }
+        }
+    }
+
+    private var viewsChart: some View {
+        Chart(viewModel.viewHistory) { point in
+            LineMark(
+                x: .value("Date", point.parsedDate ?? Date()),
+                y: .value("Views", point.views)
+            )
+            .foregroundStyle(Palette.Green.g500)
+            .interpolationMethod(.catmullRom)
+
+            AreaMark(
+                x: .value("Date", point.parsedDate ?? Date()),
+                y: .value("Views", point.views)
+            )
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [Palette.Green.g400.opacity(0.25), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 2)) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0))
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(date, format: .dateTime.month(.abbreviated).day().year())
+                            .font(AppFont.Body.regular(10))
+                            .foregroundColor(colors.textTertiary)
+                    }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [4]))
+                    .foregroundStyle(colors.border)
+                AxisValueLabel {
+                    if let n = value.as(Int.self) {
+                        Text(compactViews(n))
+                            .font(AppFont.Body.regular(10))
+                            .foregroundColor(colors.textTertiary)
+                    }
+                }
+            }
+        }
+        .frame(height: 150)
+    }
+
+    private func bottedViewsCard(totalViews: Int, botViews: Int) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Botted views prevented")
+                .font(AppFont.Body.semibold(14))
+                .foregroundColor(colors.text)
+
+            HStack(spacing: 0) {
+                Text("\(compactViews(totalViews)) total views")
+                    .font(AppFont.Body.regular(13))
+                    .foregroundColor(colors.textSecondary)
+                Rectangle()
+                    .fill(Palette.Crimson.c400)
+                    .frame(width: 1.5, height: 14)
+                    .padding(.horizontal, 10)
+                Text("\(compactViews(botViews)) Bots")
+                    .font(AppFont.Body.regular(13))
+                    .foregroundColor(colors.textSecondary)
+                Spacer()
+            }
+
+            // Split progress bar: green (legit) | red (bots)
+            GeometryReader { geo in
+                let ratio = totalViews > 0 ? CGFloat(totalViews - botViews) / CGFloat(totalViews) : 1.0
+                HStack(spacing: 2) {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Palette.Green.g500)
+                        .frame(width: geo.size.width * ratio)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Palette.Crimson.c400)
+                        .frame(width: geo.size.width * (1 - ratio))
+                }
+            }
+            .frame(height: 8)
+        }
+    }
+
+    // MARK: - Submissions Sub-tab
+
+    private var submissionsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if viewModel.submissions.isEmpty {
+                Text("No submissions yet.")
+                    .font(AppFont.Body.regular(14))
+                    .foregroundColor(colors.textSecondary)
+                    .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 1) {
+                    ForEach(viewModel.submissions) { sub in
+                        SubmissionRow(submission: sub, colors: colors)
+                        if sub.id != viewModel.submissions.last?.id {
+                            Divider().padding(.leading, 88)
+                        }
+                    }
+                }
+                .background(colors.bgCard)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.lg))
             }
         }
     }
@@ -1041,6 +1213,19 @@ struct SubmitClipSheet: View {
 }
 
 // MARK: - Helpers
+
+private func viewsDisplay(_ n: Int) -> String {
+    if n >= 1_000_000_000 { return String(format: "%.1f Billion", Double(n) / 1_000_000_000) }
+    if n >= 1_000_000     { return String(format: "%.1f Million", Double(n) / 1_000_000) }
+    if n >= 1_000         { return String(format: "%.1fK", Double(n) / 1_000) }
+    return "\(n)"
+}
+
+private func compactViews(_ n: Int) -> String {
+    if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+    if n >= 1_000     { return String(format: "%.1fK", Double(n) / 1_000) }
+    return "\(n)"
+}
 
 private func stripCents(_ cents: Int) -> String {
     let dollars = Double(cents) / 100.0

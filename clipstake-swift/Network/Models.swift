@@ -218,6 +218,8 @@ struct CampaignDetail: Codable, Identifiable {
     let resources: [CampaignResource]?
     let campaignInstructions: String?
     let totalViews: Int?
+    let botViews: Int?
+    let viewsGrowthPercent: Double?
     let isPrivate: Bool?
     let requiresLogo: Bool?
     let websiteUrl: String?
@@ -283,6 +285,20 @@ struct CampaignDetail: Codable, Identifiable {
         if v >= 1_000_000 { return String(format: "%.1fM", Double(v) / 1_000_000) }
         if v >= 1_000     { return String(format: "%.1fK", Double(v) / 1_000) }
         return "\(v)"
+    }
+}
+
+// MARK: - View Analytics
+
+struct ViewDataPoint: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let views: Int
+
+    var parsedDate: Date? {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: date) ?? ISO8601DateFormatter().date(from: date)
     }
 }
 
